@@ -1,20 +1,18 @@
-import os
 import base64
+import os
+from typing import Dict, Any, Coroutine
+
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any
-import tempfile
-import shutil
 
-from main import image_graph, process_image_with_graph
 from llm_node import process_image_base64
+from main import process_image_with_graph
 from response_models import (
     BaseResponse, TaskResponse, TaskResultResponse, HealthResponse,
     APIInfoResponse, AllTasksResponse, ProcessingStatus, ProcessingMethod,
-    success_response, error_response, create_task_response,
-    create_task_result_response, create_image_processing_response
+    success_response, create_task_response,
+    create_task_result_response, create_image_processing_response, success_response_with_data, ImageProcessingResult
 )
 
 app = FastAPI(title="图片处理API", description="上传图片并通过graph进行处理")
@@ -70,7 +68,7 @@ async def root():
             "results": "/results"
         }
     )
-    return success_response_with_data("API信息", data=api_info.dict())
+    return success_response_with_data("API信息", data=api_info.model_dump())
 
 @app.get("/health", response_model=BaseResponse[HealthResponse])
 async def health_check():
@@ -79,7 +77,7 @@ async def health_check():
         status="healthy",
         version="1.0.0"
     )
-    return success_response_with_data("服务健康", data=health.dict())
+    return success_response_with_data("服务健康", data=health.model_dump())
 
 @app.post("/upload-image", response_model=BaseResponse[TaskResponse])
 async def upload_image(
@@ -141,7 +139,7 @@ async def upload_image(
             status=ProcessingStatus.PROCESSING,
             message="图片上传成功，正在处理中..."
         )
-        return success_response_with_data("图片上传成功", data=task_response.dict())
+        return success_response_with_data("图片上传成功", data=task_response.model_dump())
 
     except HTTPException:
         raise
@@ -170,7 +168,7 @@ async def process_image_background(task_id: str, image_content: bytes, file_form
                 message="图片处理完成（通过graph）",
                 result=graph_result["data"],
                 processing_method=ProcessingMethod.GRAPH
-            ).dict()
+            ).model_dump()
         else:
             # graph处理失败，回退到直接调用
             fallback_result = process_image_base64(image_base64)
@@ -181,7 +179,7 @@ async def process_image_background(task_id: str, image_content: bytes, file_form
                 result=fallback_result,
                 processing_method=ProcessingMethod.FALLBACK,
                 graph_error=graph_result["error"]
-            ).dict()
+            ).model_dump()
 
     except Exception as e:
         # 更新任务状态为失败
@@ -191,7 +189,7 @@ async def process_image_background(task_id: str, image_content: bytes, file_form
             message="图片处理失败",
             error=str(e),
             processing_method=ProcessingMethod.FAILED
-        ).dict()
+        ).model_dump()
 
 @app.get("/status/{task_id}", response_model=BaseResponse[TaskResultResponse])
 async def get_processing_status(task_id: str) -> BaseResponse[TaskResultResponse]:
@@ -242,7 +240,7 @@ async def delete_result(task_id: str) -> BaseResponse:
     return success_response(message=f"任务 {task_id} 的结果已删除")
 
 @app.post("/process-image-sync", response_model=BaseResponse[Dict[str, Any]])
-async def process_image_sync(file: UploadFile = File(...)) -> BaseResponse[Dict[str, Any]]:
+async def process_image_sync(file: UploadFile = File(...)) -> BaseResponse[ImageProcessingResult]:
     """
     同步处理图片 - 直接使用graph处理
 
