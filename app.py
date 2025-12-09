@@ -1,13 +1,14 @@
 import base64
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from llm_node import process_image_base64
-from main import process_image_with_graph
+from main import process_image_with_graph, process_content_moderation, process_image_moderation
 from response_models import (
     UnifiedResponse, TaskResponse, TaskResultResponse, HealthResponse,
     APIInfoResponse, AllTasksResponse, ProcessingStatus, ProcessingMethod,
@@ -15,7 +16,12 @@ from response_models import (
     create_task_result_response, create_image_processing_response, success_response_with_data, ImageProcessingResult
 )
 
-app = FastAPI(title="图片处理API", description="上传图片并通过graph进行处理")
+# 定义内容审查请求模型
+class ContentModerationRequest(BaseModel):
+    text_content: Optional[str] = ""
+    description: str = "内容审查请求"
+
+app = FastAPI(title="内容审查API", description="综合文本和图片内容审查服务")
 
 # 配置CORS
 app.add_middleware(
@@ -65,7 +71,10 @@ async def root():
             "status": "/status/{task_id}",
             "health": "/health",
             "sync_process": "/process-image-sync",
-            "results": "/results"
+            "results": "/results",
+            "content_moderation": "/moderate-content",
+            "text_moderation": "/moderate-text",
+            "image_moderation": "/moderate-image"
         }
     )
     return success_response_with_data("API信息", data=api_info.model_dump())
@@ -301,6 +310,170 @@ async def process_image_sync(file: UploadFile = File(...)) -> UnifiedResponse[Im
         raise HTTPException(
             status_code=500,
             detail=f"处理图片时发生错误: {str(e)}"
+        )
+
+@app.post("/moderate-text", response_model=UnifiedResponse[Dict[str, Any]])
+async def moderate_text_content(request: ContentModerationRequest) -> UnifiedResponse[Dict[str, Any]]:
+    """
+    纯文本内容审查接口
+
+    Args:
+        request: 包含文本内容的请求
+
+    Returns:
+        文本审查结果
+    """
+    try:
+        if not request.text_content or not request.text_content.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="文本内容不能为空"
+            )
+
+        # 调用内容审查函数
+        result = process_content_moderation(text_content=request.text_content)
+
+        if result["success"]:
+            return success_response_with_data(
+                message="文本审查完成",
+                data=result["data"]
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"文本审查失败: {result.get('error', '未知错误')}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"处理文本审查时发生错误: {str(e)}"
+        )
+
+@app.post("/moderate-content", response_model=UnifiedResponse[Dict[str, Any]])
+async def moderate_content(
+    file: Optional[UploadFile] = File(None),
+    text_content: Optional[str] = Form(None)
+) -> UnifiedResponse[Dict[str, Any]]:
+    """
+    综合内容审查接口 - 可同时审查文本和图片
+
+    Args:
+        file: 可选的图片文件
+        text_content: 可选的文本内容
+
+    Returns:
+        综合审查结果
+    """
+    try:
+        # 检查是否至少提供了一种内容
+        if not file and (not text_content or not text_content.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="必须提供图片或文本内容中的一种"
+            )
+
+        image_base64 = ""
+
+        # 处理图片（如果提供）
+        if file:
+            # 验证文件类型
+            if file.content_type not in SUPPORTED_IMAGE_TYPES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"不支持的图片格式。支持的格式: {', '.join(SUPPORTED_IMAGE_TYPES)}"
+                )
+
+            # 验证文件大小（5MB限制）
+            content = await file.read()
+            if len(content) > 5 * 1024 * 1024:  # 5MB
+                raise HTTPException(
+                    status_code=400,
+                    detail="图片文件大小不能超过5MB"
+                )
+
+            # 获取文件格式并转换为base64
+            file_format = file.filename.split('.')[-1] if file.filename else "jpg"
+            image_base64 = get_image_base64(content, file_format)
+
+        # 调用综合内容审查函数
+        result = process_content_moderation(
+            text_content=text_content or "",
+            image_base64=image_base64
+        )
+
+        if result["success"]:
+            return success_response_with_data(
+                message="内容审查完成",
+                data=result["data"]
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"内容审查失败: {result.get('error', '未知错误')}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"处理内容审查时发生错误: {str(e)}"
+        )
+
+@app.post("/moderate-image", response_model=UnifiedResponse[Dict[str, Any]])
+async def moderate_image_content(file: UploadFile = File(...)) -> UnifiedResponse[Dict[str, Any]]:
+    """
+    纯图片内容审查接口
+
+    Args:
+        file: 上传的图片文件
+
+    Returns:
+        图片审查结果
+    """
+    try:
+        # 验证文件类型
+        if file.content_type not in SUPPORTED_IMAGE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的图片格式。支持的格式: {', '.join(SUPPORTED_IMAGE_TYPES)}"
+            )
+
+        # 验证文件大小（5MB限制）
+        content = await file.read()
+        if len(content) > 5 * 1024 * 1024:  # 5MB
+            raise HTTPException(
+                status_code=400,
+                detail="图片文件大小不能超过5MB"
+            )
+
+        # 获取文件格式并转换为base64
+        file_format = file.filename.split('.')[-1] if file.filename else "jpg"
+        image_base64 = get_image_base64(content, file_format)
+
+        # 调用图片审查函数
+        result = process_image_moderation(image_base64)
+
+        if result["success"]:
+            return success_response_with_data(
+                message="图片审查完成",
+                data=result["data"]
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"图片审查失败: {result.get('error', '未知错误')}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"处理图片审查时发生错误: {str(e)}"
         )
 
 if __name__ == "__main__":
