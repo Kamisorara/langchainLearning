@@ -478,13 +478,13 @@ async def moderate_image_content(file: UploadFile = File(...)) -> UnifiedRespons
 
 if __name__ == "__main__":
     print("启动FastAPI服务器...")
-    print("访问 http://localhost:8080/docs 查看API文档")
-    print("访问 http://localhost:8080/ 查看API信息")
+    print("访问 http://localhost:8088/docs 查看API文档")
+    print("访问 http://localhost:8088/ 查看API信息")
 
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=8080,
+        port=8088,
         reload=True,
         log_level="info"
     )
