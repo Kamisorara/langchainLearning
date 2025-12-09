@@ -227,7 +227,7 @@ def create_image_processing_response(
             analysis_result=analysis_result,
             processing_time=processing_time,
             image_info=image_info
-        ).dict()
+        ).model_dump()
 
         # 添加处理元数据
         if processing_method or graph_error:
